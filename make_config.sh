@@ -1,11 +1,5 @@
 #!/bin/bash
 
-# First argument: Client identifier
-
-KEY_DIR=/root/keys
-OUTPUT_DIR=/home/sammy/client-configs/files
-BASE_CONFIG=/home/sammy/client-configs/base.conf
-
 cat /root/base.conf \
     <(echo -e '<ca>') \
     /root/pki/ca.crt \
