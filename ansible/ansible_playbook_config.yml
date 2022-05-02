@@ -1,0 +1,306 @@
+---
+- name: Adding ssh key to root user
+  hosts: all
+  remote_user: admin
+
+  tasks:
+    - name: Adding ssh key to root user
+      command: sudo cp /home/admin/.ssh/authorized_keys /root/.ssh/authorized_keys
+
+##### root@all-servers
+
+- name: Configuring the server using root login
+  hosts: all
+  remote_user: root
+
+  tasks:
+    - name: Updating and upgrading packages ...
+      apt:
+        upgrade: yes
+        update_cache: yes
+
+    - name: Install packages (python3, openvpn ...) ...
+      apt:
+        update_cache: yes
+        name:
+          - python3
+          - python3-pip
+          - htop
+          - whois
+          - curl
+          - tcpdump
+          - openvpn
+          - ufw
+
+    - name: Install pexpect ...
+      pip:
+        name: pexpect
+
+    - name: Generate password hash
+      ansible.builtin.expect:
+        command: mkpasswd --method=sha-512
+        responses:
+          (?i)password: "root_pwd"
+      register: password_hash
+
+    - name: Change password for root user
+      become: true
+      user:
+        name: root
+        password: "{{ password_hash.stdout_lines[-1] }}"
+
+    - name: Modify ssh_config file
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        line: 'PermitRootLogin without-password'
+
+    - name: Modify .bashrc file
+      lineinfile:
+        path: /root/.bashrc
+        line: "{{ item }}"
+      loop:
+        - 'alias l="ls --color=auto"'
+        - 'alias ll="ls -l --color=auto"'
+        - 'alias lll="ls -la --color=auto"'
+        - 'alias watch="watch "'
+
+    - name: Create vim config file
+      command: touch /root/.vimrc
+      args:
+        creates: /root/.vimrc
+    
+    - name: Modifying .vimrc file
+      lineinfile:
+        path: /root/.vimrc
+        line: "{{ item }}"
+      loop:
+        - "set encoding=utf-8"
+        - "set nu"
+        - "syntax on"
+        - "set cursorline"
+        - "set autoindent"
+        - "set smartindent"
+        - "set list listchars=tab:▸\\ ,trail:·"
+        - "set tabstop=2"
+        - "set shiftwidth=2"
+        - "set expandtab"
+
+    - name: Generate SSH key ED25519
+      community.crypto.openssh_keypair:
+        path: /root/.ssh/id_ed25519
+        type: ed25519
+
+    - name: Set TimeZone
+      community.general.timezone:
+        name: Europe/Paris
+
+###################################################################################
+
+    - name: Download easyRSA config files
+      get_url:
+        url: https://github.com/OpenVPN/easy-rsa/releases/download/v3.0.6/EasyRSA-unix-v3.0.6.tgz
+        dest: /root/EasyRSA-unix-v3.0.6.tgz
+        mode: '0700'
+
+    - name: Extract easyRSA files
+      command: tar xvf EasyRSA-unix-v3.0.6.tgz
+
+    - name: Copy vars file
+      command: cp /root/EasyRSA-v3.0.6/vars.example /root/EasyRSA-v3.0.6/vars
+
+    - name: Init easyRSA
+      command: sh /root/EasyRSA-v3.0.6/easyrsa init-pki
+
+    - name: Build CA
+      ansible.builtin.expect:
+        command: sh /root/EasyRSA-v3.0.6/easyrsa build-ca nopass
+        responses:
+          (?i)Common: "Easy-RSA CA"
+
+    - name: Generate req server
+      ansible.builtin.expect:
+        command: sh /root/EasyRSA-v3.0.6/easyrsa gen-req server nopass
+        responses:
+          (?i)Common: "server"
+
+    - name: Copy SERVER key to openvpn directory
+      command: cp /root/pki/private/server.key /etc/openvpn/
+
+    - name: Generate req server
+      ansible.builtin.expect:
+        command: sh /root/EasyRSA-v3.0.6/easyrsa sign-req server server
+        responses:
+          (?i)Confirm: "yes"
+
+    - name: Copy SERVER cert to openvpn directory
+      command: cp /root/pki/issued/server.crt /etc/openvpn/
+    - name: Copy CA cert to openvpn directory
+      command: cp /root/pki/ca.crt /etc/openvpn/
+
+    - name: Generate strong Diffie-Hellman key
+      command: sh /root/EasyRSA-v3.0.6/easyrsa gen-dh
+    - name: Copy Diffie-Hellman key to openvpn directory
+      command: cp /root/pki/dh.pem /etc/openvpn/
+
+    - name: Generate HMAC signature
+      command: openvpn --genkey --secret /etc/openvpn/ta.key
+
+    - name: Generate CLIENT req
+      ansible.builtin.expect:
+        command: sh /root/EasyRSA-v3.0.6/easyrsa gen-req client1 nopass
+        responses:
+          (?i)Common: "yes"
+
+    - name: Sign CLIENT req
+      ansible.builtin.expect:
+        command: sh /root/EasyRSA-v3.0.6/easyrsa sign-req client client1
+        responses:
+          (?i)Confirm: "yes"
+
+######################################################################################################
+##### Config OPENVPN part
+######################################################################################################
+
+    - name: Copy openVPN config file
+      command: cp /usr/share/doc/openvpn/examples/sample-config-files/server.conf /etc/openvpn/
+
+    - name: Add auth SHA256 line
+      ansible.builtin.lineinfile:
+        path: /etc/openvpn/server.conf
+        line: auth SHA256
+
+    - name: Add logs config
+      ansible.builtin.lineinfile:
+        path: /etc/openvpn/server.conf
+        search_string: log-append
+        line: log-append /var/log/openvpn/openvpn.log
+
+    - name: Replace Diffie-Hellman filename
+      ansible.builtin.lineinfile:
+        path: /etc/openvpn/server.conf
+        search_string: dh dh2048.pem
+        line: dh /etc/openvpn/dh.pem
+
+    - name: Uncomment for non-windows systems
+      ansible.builtin.lineinfile:
+        path: /etc/openvpn/server.conf
+        search_string: ;user nobody
+        line: user nobody
+    - name: Uncomment for non-windows systems
+      ansible.builtin.lineinfile:
+        path: /etc/openvpn/server.conf
+        search_string: ;group nogroup
+        line: group nogroup
+
+    - name: Uncomment redirect-gateway
+      ansible.builtin.lineinfile:
+        path: /etc/openvpn/server.conf
+        search_string: ;push "redirect-gateway def1 bypass-dhcp"
+        line: push "redirect-gateway def1 bypass-dhcp"
+
+    - name: Uncomment dhcp-option
+      ansible.builtin.lineinfile:
+        path: /etc/openvpn/server.conf
+        search_string: ;push "dhcp-option DNS 208.67.222.222"
+        line: push "dhcp-option DNS 208.67.222.222"
+    - name: Uncomment dhcp-option
+      ansible.builtin.lineinfile:
+        path: /etc/openvpn/server.conf
+        search_string: ;push "dhcp-option DNS 208.67.220.220"
+        line: push "dhcp-option DNS 208.67.220.220"
+
+    - name: Enable IPv4 FORWARDING
+      ansible.builtin.lineinfile:
+        path: /etc/sysctl.conf
+        search_string: "#net.ipv4.ip_forward=1"
+        line: net.ipv4.ip_forward=1
+
+    - name: Reload session forward value
+      command: sysctl -p
+
+    - name: Change UFW FORWARD policy
+      ansible.builtin.lineinfile:
+        path: /etc/default/ufw
+        search_string: DEFAULT_FORWARD_POLICY="DROP"
+        line: DEFAULT_FORWARD_POLICY="ACCEPT"
+
+    - name: Add UFW FORWARD policy
+      ansible.builtin.lineinfile:
+        path: /etc/ufw/before.rules
+        insertbefore: "# Don't delete these required lines, otherwise there will be errors"
+        line: "{{'*nat\n:POSTROUTING ACCEPT [0:0]\n-A POSTROUTING -s 10.8.0.0/8 -o eth0 -j MASQUERADE\nCOMMIT\n'.replace('\\n', '\n')}}"
+
+    - name: Allow everything and enable UFW
+      community.general.ufw:
+        state: enabled
+        policy: allow
+
+    - name: Start openVPN service
+      ansible.builtin.systemd:
+        state: started
+        enabled: yes
+        name: openvpn@server
+
+######################################################################################################
+##### Config CLIENT part
+######################################################################################################
+
+    - name: Copy client config file
+      command: cp /usr/share/doc/openvpn/examples/sample-config-files/client.conf /root/base.conf
+
+    - name: Enable IPv4 FORWARDING
+      ansible.builtin.lineinfile:
+        path: /root/base.conf
+        search_string: remote my-server-1 1194
+        line: remote {{ inventory_hostname }} 1194
+
+    - name: Uncomment for non-windows systems
+      ansible.builtin.lineinfile:
+        path: /root/base.conf
+        search_string: ;user nobody
+        line: user nobody
+    - name: Uncomment for non-windows systems
+      ansible.builtin.lineinfile:
+        path: /root/base.conf
+        search_string: ;group nogroup
+        line: group nogroup
+
+    - name: Comment CA line
+      ansible.builtin.lineinfile:
+        path: /root/base.conf
+        search_string: ca ca.crt
+        line: "#ca ca.crt"
+    - name: Comment CERT line
+      ansible.builtin.lineinfile:
+        path: /root/base.conf
+        search_string: cert client.crt
+        line: "#cert client.crt"
+    - name: Comment KEY line
+      ansible.builtin.lineinfile:
+        path: /root/base.conf
+        search_string: key client.key
+        line: "#key client.key"
+
+    - name: Add key-direction line
+      ansible.builtin.lineinfile:
+        path: /root/base.conf
+        line: '{{item}}'
+      loop:
+        - key-direction 1
+        - auth SHA256
+
+
+    - name: Copy shell file to server
+      copy:
+        src: '{{playbook_dir}}/files/make_config.sh'
+        dest: /root/make_config.sh
+        remote_src: no
+        mode: 0700
+    - name: Generate client openvpn file
+      ansible.builtin.shell: /root/make_config.sh
+
+    - name: Fetch openvpn file
+      ansible.builtin.fetch:
+        src: /root/client.ovpn
+        dest: '{{playbook_dir}}/client.ovpn'
+        flat: yes
