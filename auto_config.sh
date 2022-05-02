@@ -14,7 +14,7 @@ select choice in "${choices[@]}"; do
       sp="/-\|"
       counter=0
       printf "Waiting for AWS instances to be available ...  "
-      until [ $counter -gt 2000000 ]
+      until [ $counter -gt 3000000 ]
       do
         printf "\b${sp:i++%${#sp}:1}"
         ((counter++))

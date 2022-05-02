@@ -302,5 +302,5 @@
     - name: Fetch openvpn file
       ansible.builtin.fetch:
         src: /root/client.ovpn
-        dest: '{{playbook_dir}}/client.ovpn'
+        dest: '{{playbook_dir}}/../client.ovpn'
         flat: yes
