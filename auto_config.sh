@@ -7,8 +7,7 @@ select choice in "${choices[@]}"; do
     "Start the project")
       cd terraform
       terraform init
-      terraform plan -var-file aws.tfvars
-      terraform apply -var-file aws.tfvars
+      terraform apply -auto-approve
       cd ../ansible
       i=1
       sp="/-\|"
@@ -23,8 +22,9 @@ select choice in "${choices[@]}"; do
       exit
       ;;
     "Destroy intances")
+      rm -rf client.ovpn
       cd terraform
-      terraform apply -destroy -var-file aws.tfvars
+      terraform apply -destroy
       exit
       ;;
     "Launch Ansible config")
